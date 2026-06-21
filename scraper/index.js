@@ -31,6 +31,12 @@
  *   GET /api/chapter?url=... -> isi HTML satu chapter + updatedAt/publishedAt
  *                               chapter tsb (dibersihkan lewat htmlCleaner).
  *                               Tetap LAZY: baru diambil saat chapter dibuka.
+ *   POST /api/chapter-dates   -> body {urls:[...]}, balas tanggal
+ *                               (updatedAt/publishedAt) BANYAK chapter
+ *                               sekaligus tanpa htmlContent. Dipanggil saat
+ *                               halaman Volume dibuka, supaya semua chapter
+ *                               di volume itu langsung tampil keterangan
+ *                               "terakhir update"-nya.
  *   GET /api/health           -> status scraper (kapan terakhir scan, jumlah
  *                               novel di cache, dll) — berguna untuk
  *                               memantau proses di Railway.
@@ -517,6 +523,53 @@ async function getChapterContent(chapterUrl) {
   return promise;
 }
 
+/**
+ * Ambil HANYA tanggal (updatedAt/publishedAt) untuk SEKUMPULAN chapter
+ * sekaligus — dipakai saat halaman Volume dibuka di Flutter, supaya semua
+ * chapter di volume itu bisa langsung menampilkan keterangan "terakhir
+ * update" tanpa user harus membuka satu-satu.
+ *
+ * - Chapter yang SUDAH ada di chapterCache (pernah dibuka sebelumnya)
+ *   langsung dipakai dari cache, TANPA request baru sama sekali.
+ * - Chapter yang belum ada di cache di-fetch paralel (dibatasi
+ *   SCRAPE_CONCURRENCY) — TAPI tidak memakai htmlCleaner (kita tidak butuh
+ *   htmlContent di sini), hanya extractDates dari HTML mentah. Hasilnya
+ *   TIDAK ditulis ke chapterCache (karena tidak punya htmlContent lengkap),
+ *   supaya saat chapter itu nanti benar-benar dibuka, getChapterContent
+ *   tetap mengambil & membersihkan HTML penuh seperti biasa.
+ *
+ * @param {string[]} chapterUrls
+ * @returns {Promise<Record<string, {updatedAt: string|null, publishedAt: string|null}>>}
+ */
+async function getChapterDatesBatch(chapterUrls) {
+  const result = {};
+  const needFetch = [];
+
+  for (const url of chapterUrls) {
+    if (Object.prototype.hasOwnProperty.call(chapterCache, url)) {
+      const cached = chapterCache[url];
+      result[url] = { updatedAt: cached.updatedAt, publishedAt: cached.publishedAt };
+    } else {
+      needFetch.push(url);
+    }
+  }
+
+  if (needFetch.length > 0) {
+    console.log(`[chapter-dates] Mengambil tanggal ${needFetch.length} chapter (paralel)...`);
+    await runWithConcurrency(needFetch, SCRAPE_CONCURRENCY, async (url) => {
+      try {
+        const html = await fetchHtml(url);
+        result[url] = extractDates(html);
+      } catch (err) {
+        console.error(`[chapter-dates] Gagal mengambil tanggal ${url}: ${err.message}`);
+        result[url] = { updatedAt: null, publishedAt: null };
+      }
+    });
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // 4. SCHEDULER — scrape penuh berkala (index + detail novel yang berubah)
 // ---------------------------------------------------------------------------
@@ -624,7 +677,7 @@ function sendJson(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': '*',
   });
   res.end(JSON.stringify(data));
@@ -634,7 +687,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': '*',
     });
     return res.end();
@@ -677,6 +730,29 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    // POST /api/chapter-dates -> tanggal (updatedAt/publishedAt) untuk BANYAK
+    // chapter sekaligus. Body: { "urls": ["...", "...", ...] }.
+    // Dipanggil saat halaman Volume dibuka, supaya semua chapter di volume
+    // itu bisa langsung menampilkan keterangan "terakhir update".
+    if (pathname === '/api/chapter-dates' && req.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      let body;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+      } catch (err) {
+        return sendJson(res, 400, { error: 'Body harus berupa JSON valid' });
+      }
+
+      const urls = Array.isArray(body.urls) ? body.urls.filter((u) => typeof u === 'string') : [];
+      if (urls.length === 0) {
+        return sendJson(res, 400, { error: 'Field "urls" wajib diisi dan berupa array string' });
+      }
+
+      const dates = await getChapterDatesBatch(urls);
+      return sendJson(res, 200, dates);
+    }
+
     // GET /api/health -> status scraper, berguna untuk memantau di Railway.
     if (pathname === '/api/health' && req.method === 'GET') {
       return sendJson(res, 200, {
@@ -704,6 +780,7 @@ server.listen(PORT, () => {
   console.log('  GET /api/novels            -> index ringan, terurut terbaru->terlama (dari cache)');
   console.log('  GET /api/novels/:id        -> detail novel (dari cache, fallback lazy jika belum ada)');
   console.log('  GET /api/chapter?url=...   -> htmlContent + updatedAt/publishedAt chapter (lazy)');
+  console.log('  POST /api/chapter-dates    -> tanggal banyak chapter sekaligus (untuk halaman Volume)');
   console.log('  GET /api/health            -> status scraper');
   console.log(`Cache disimpan di: ${CACHE_DIR}`);
   console.log(`Interval scrape otomatis: ${Math.round(SCRAPE_INTERVAL_MS / 60000)} menit, concurrency: ${SCRAPE_CONCURRENCY}`);
