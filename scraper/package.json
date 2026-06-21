@@ -1,0 +1,14 @@
+{
+  "name": "ln-scraper",
+  "version": "2.0.0",
+  "description": "Scraper light novel (eager + scheduled cache) - scrape berkala di background lalu disajikan lewat API HTTP untuk app Flutter LNReader",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "cheerio": "^1.0.0"
+  }
+}

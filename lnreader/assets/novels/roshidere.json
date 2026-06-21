@@ -1,0 +1,108 @@
+{
+  "id": "roshidere",
+  "title": "Roshidere",
+  "alias": ["My Stepmom's Daughter Is My Ex"],
+  "cover": "https://example.com/covers/roshidere.jpg",
+  "author": "Kennoji",
+  "artist": "Yutaka Sugimoto, asanoya",
+  "genres": ["Romance", "Comedy", "Drama"],
+  "synopsis": "Kazuomi 'Izumi' Mizuhara mengetahui bahwa pacar SMA-nya yang dulu menjadi mantannya kini akan menjadi saudari tirinya setelah orang tua mereka menikah kembali...",
+  "volumes": [
+    {
+      "number": 1,
+      "name": "Volume 1",
+      "cover": "https://example.com/volumes/roshidere-v1.jpg",
+      "chapters": [
+        {
+          "title": "Ilustrasi",
+          "htmlContent": "<div><img src=\"https://example.com/illust/v1-01.jpg\"/></div>",
+          "order": 0
+        },
+        {
+          "title": "Prolog",
+          "htmlContent": "<p>Ini adalah <b>prolog</b> dari cerita.</p><p>Paragraf <i>kedua</i> dengan <span style=\"text-align:center\">teks rata tengah</span>.</p>",
+          "order": 1
+        },
+        {
+          "title": "Chapter 1",
+          "htmlContent": "<p>Isi chapter 1...</p><br/><p>Paragraf setelah baris baru.</p>",
+          "order": 2
+        },
+        {
+          "title": "Chapter 2",
+          "htmlContent": "<p>Isi chapter 2...</p>",
+          "order": 3
+        },
+        {
+          "title": "Epilog",
+          "htmlContent": "<p>Isi epilog volume 1...</p>",
+          "order": 4
+        },
+        {
+          "title": "Kata Penutup",
+          "htmlContent": "<p>Terima kasih telah membaca volume 1.</p>",
+          "order": 5
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "name": "Volume 2",
+      "cover": "https://example.com/volumes/roshidere-v2.jpg",
+      "chapters": [
+        {
+          "title": "Ilustrasi",
+          "htmlContent": "<div><img src=\"https://example.com/illust/v2-01.jpg\"/></div>",
+          "order": 0
+        },
+        {
+          "title": "Prolog",
+          "htmlContent": "<p>Prolog volume 2...</p>",
+          "order": 1
+        },
+        {
+          "title": "Chapter 1",
+          "htmlContent": "<p>Isi chapter 1 volume 2...</p>",
+          "order": 2
+        },
+        {
+          "title": "Chapter 2",
+          "htmlContent": "<p>Isi chapter 2 volume 2...</p>",
+          "order": 3
+        },
+        {
+          "title": "Chapter 3",
+          "htmlContent": "<p>Isi chapter 3 volume 2...</p>",
+          "order": 4
+        },
+        {
+          "title": "Epilog",
+          "htmlContent": "<p>Epilog volume 2...</p>",
+          "order": 5
+        },
+        {
+          "title": "Kata Penutup",
+          "htmlContent": "<p>Kata penutup volume 2.</p>",
+          "order": 6
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "name": "Volume 3",
+      "cover": "https://example.com/volumes/roshidere-v3.jpg",
+      "chapters": [
+        {
+          "title": "Ilustrasi",
+          "htmlContent": "<div><img src=\"https://example.com/illust/v3-01.jpg\"/></div>",
+          "order": 0
+        },
+        {
+          "title": "Prolog",
+          "htmlContent": "<p>Prolog volume 3...</p>",
+          "order": 1
+        }
+      ]
+    }
+  ]
+}
