@@ -1,0 +1,38 @@
+[
+  {
+    "id": "roshidere",
+    "title": "Roshidere",
+    "alias": ["My Stepmom's Daughter Is My Ex"],
+    "cover": "https://example.com/covers/roshidere.jpg",
+    "author": "Kennoji",
+    "genres": ["Romance", "Comedy", "Drama"],
+    "dataPath": "assets/novels/roshidere.json"
+  },
+  {
+    "id": "cote",
+    "title": "Classroom of the Elite",
+    "alias": ["Youjo Senki", "COTE"],
+    "cover": "https://example.com/covers/cote.jpg",
+    "author": "Shougo Kinugasa",
+    "genres": ["Drama", "Psychological", "School Life"],
+    "dataPath": "assets/novels/cote.json"
+  },
+  {
+    "id": "gimai",
+    "title": "Gimai Seikatsu",
+    "alias": ["Days With My Step Sister"],
+    "cover": "https://example.com/covers/gimai.jpg",
+    "author": "Ghost Mikawa",
+    "genres": ["Romance", "Slice of Life"],
+    "dataPath": "assets/novels/gimai.json"
+  },
+  {
+    "id": "make-heroine",
+    "title": "Make Heroine ga Oosugiru",
+    "alias": ["Too Many Losing Heroines"],
+    "cover": "https://example.com/covers/make-heroine.jpg",
+    "author": "Takibi Amamori",
+    "genres": ["Romance", "Comedy", "School Life"],
+    "dataPath": "assets/novels/make-heroine.json"
+  }
+]
