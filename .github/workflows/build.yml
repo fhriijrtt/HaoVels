@@ -20,6 +20,10 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Generate missing platform folders
+        working-directory: lnreader
+        run: flutter create --platforms=android .
+
       - name: Install dependencies
         working-directory: lnreader
         run: flutter pub get
