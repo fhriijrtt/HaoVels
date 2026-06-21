@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../core/models/models.dart';
+import '../core/utils/date_format.dart';
 
 class NovelCard extends StatelessWidget {
   final Novel novel;
@@ -56,9 +57,28 @@ class NovelCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     const SizedBox(height: 6),
-                    Text(
-                      '${novel.volumeCount} Volume',
-                      style: Theme.of(context).textTheme.bodySmall,
+                    Row(
+                      children: [
+                        Text(
+                          '${novel.volumeCount} Volume',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (novel.updatedAt != null) ...[
+                          const SizedBox(width: 8),
+                          const Text('•', style: TextStyle(color: Colors.grey)),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              formatRelative(novel.updatedAt!),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: Colors.amber.shade300),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),

@@ -5,6 +5,7 @@ import 'package:flutter_html/flutter_html.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../core/providers/providers.dart';
 import '../../core/models/models.dart';
+import '../../core/utils/date_format.dart';
 
 class ReaderPage extends ConsumerStatefulWidget {
   final String novelId;
@@ -120,26 +121,45 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                       const Center(child: CircularProgressIndicator()),
                   error: (e, st) =>
                       Center(child: Text('Gagal memuat chapter: $e')),
-                  data: (htmlContent) => SingleChildScrollView(
+                  data: (result) => SingleChildScrollView(
                     padding: const EdgeInsets.all(16),
-                    child: Html(
-                      data: htmlContent,
-                      style: {
-                        "body": Style(
-                          fontFamily: 'Georgia',
-                          fontSize: FontSize(_fontSize),
-                          lineHeight: const LineHeight(1.6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (result.updatedAt != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Text(
+                              'Terakhir update: ${formatDate(result.updatedAt!)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade500,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                        Html(
+                          data: result.htmlContent,
+                          style: {
+                            "body": Style(
+                              fontFamily: 'Georgia',
+                              fontSize: FontSize(_fontSize),
+                              lineHeight: const LineHeight(1.6),
+                              margin: Margins.zero,
+                              padding: HtmlPaddings.zero,
+                            ),
+                            "p": Style(
+                              margin: Margins.only(bottom: 12),
+                            ),
+                            "img": Style(
+                              width: Width(double.infinity, Unit.px),
+                              margin: Margins.symmetric(vertical: 12),
+                            ),
+                          },
+                          extensions: [
+                            _ImageExtension(),
+                          ],
                         ),
-                        "p": Style(
-                          margin: Margins.only(bottom: 12),
-                        ),
-                        "img": Style(
-                          width: Width(double.infinity, Unit.px),
-                          margin: Margins.symmetric(vertical: 12),
-                        ),
-                      },
-                      extensions: [
-                        _ImageExtension(),
                       ],
                     ),
                   ),

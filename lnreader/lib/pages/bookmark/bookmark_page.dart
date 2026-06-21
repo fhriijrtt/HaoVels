@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../core/providers/providers.dart';
+import '../../core/utils/date_format.dart';
 import '../../widgets/bottom_navbar.dart';
 
 class BookmarkPage extends ConsumerWidget {
@@ -10,6 +11,9 @@ class BookmarkPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // bookmarkListProvider sudah menggabungkan bookmark lokal dengan
+    // updatedAt TERBARU dari server & mengurutkannya TERBARU -> TERLAMA
+    // (lihat providers.dart), jadi di sini tinggal ditampilkan apa adanya.
     final bookmarksAsync = ref.watch(bookmarkListProvider);
 
     return Scaffold(
@@ -27,6 +31,10 @@ class BookmarkPage extends ConsumerWidget {
             itemCount: bookmarks.length,
             itemBuilder: (context, i) {
               final item = bookmarks[i];
+              final updatedAtStr = item['updatedAt'] as String?;
+              final updatedAt =
+                  updatedAtStr != null ? DateTime.tryParse(updatedAtStr) : null;
+
               return Card(
                 margin: const EdgeInsets.only(bottom: 10),
                 child: ListTile(
@@ -41,6 +49,15 @@ class BookmarkPage extends ConsumerWidget {
                     ),
                   ),
                   title: Text(item['title'] ?? ''),
+                  subtitle: updatedAt != null
+                      ? Text(
+                          'Update: ${formatRelative(updatedAt)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.amber.shade300,
+                          ),
+                        )
+                      : null,
                   onTap: () => context.push('/novel/${item['id']}'),
                 ),
               );

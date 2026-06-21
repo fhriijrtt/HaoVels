@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../core/providers/providers.dart';
+import '../../core/utils/date_format.dart';
 import '../../widgets/volume_card.dart';
 
 class NovelDetailPage extends ConsumerWidget {
@@ -64,6 +65,7 @@ class NovelDetailPage extends ConsumerWidget {
                             id: novel.id,
                             title: novel.title,
                             cover: novel.cover,
+                            updatedAt: novel.updatedAt?.toIso8601String(),
                           );
                           ref.invalidate(bookmarkListProvider);
                           (context as Element).markNeedsBuild();
@@ -80,6 +82,24 @@ class NovelDetailPage extends ConsumerWidget {
                     Text(novel.title,
                         style: Theme.of(context).textTheme.headlineSmall),
                     const SizedBox(height: 8),
+                    if (novel.updatedAt != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            Icon(Icons.update,
+                                size: 14, color: Colors.amber.shade300),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Terakhir update: ${formatRelative(novel.updatedAt!)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.amber.shade300,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     if (novel.author.isNotEmpty)
                       Text('Author: ${novel.author}'),
                     if (novel.artist.isNotEmpty)

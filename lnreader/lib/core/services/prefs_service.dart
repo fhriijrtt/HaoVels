@@ -19,10 +19,16 @@ class PrefsService {
     return list.any((e) => e['id'] == novelId);
   }
 
+  /// [updatedAt] (ISO 8601 string, opsional) disimpan sebagai SNAPSHOT
+  /// terakhir diketahui dari `Novel.updatedAt` saat bookmark dibuat. Ini
+  /// hanya FALLBACK untuk sorting saat index API belum sempat di-load (mis.
+  /// offline) — begitu index API tersedia, BookmarkPage selalu memakai
+  /// updatedAt TERBARU dari server, bukan snapshot ini.
   Future<void> toggleBookmark({
     required String id,
     required String title,
     required String cover,
+    String? updatedAt,
   }) async {
     final sp = await SharedPreferences.getInstance();
     final list = await getBookmarks();
@@ -30,7 +36,12 @@ class PrefsService {
     if (exists >= 0) {
       list.removeAt(exists);
     } else {
-      list.add({'id': id, 'title': title, 'cover': cover});
+      list.add({
+        'id': id,
+        'title': title,
+        'cover': cover,
+        'updatedAt': updatedAt,
+      });
     }
     await sp.setString(_bookmarkKey, jsonEncode(list));
   }
