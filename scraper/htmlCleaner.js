@@ -1,4 +1,5 @@
 const cheerio = require('cheerio');
+const { extractDates } = require('./dateExtractor');
 
 /**
  * Tag yang dipertahankan saat membersihkan isi chapter.
@@ -39,17 +40,23 @@ const REMOVE_SELECTORS = [
  * Mengambil & membersihkan HTML dari elemen `.post-body.entry-content`,
  * mempertahankan struktur paragraf/format dan menghapus elemen yang tidak diinginkan.
  *
+ * PENTING: tanggal (updatedAt/publishedAt) diambil dari `rawHtml` SEBELUM
+ * elemen-elemen dibuang, karena blok JSON-LD ada di luar `.post-body` dan
+ * fungsi ini hanya bekerja di dalam `.post-body` untuk pembersihan konten.
+ *
  * @param {string} rawHtml - HTML mentah dari halaman chapter.
- * @returns {string} HTML chapter yang sudah bersih, siap dipakai flutter_html.
+ * @returns {{ htmlContent: string, updatedAt: string|null, publishedAt: string|null }}
  */
 function extractChapterHtml(rawHtml) {
+  const { updatedAt, publishedAt } = extractDates(rawHtml);
+
   const $ = cheerio.load(rawHtml);
   const content = $('.post-body.entry-content').first();
 
   if (content.length === 0) {
     // Fallback: jika selector tidak ditemukan, kembalikan body apa adanya
     // (lebih baik daripada gagal total saat struktur halaman sedikit berbeda).
-    return '';
+    return { htmlContent: '', updatedAt, publishedAt };
   }
 
   // Hapus elemen yang tidak diinginkan: script, iklan, widget, komentar, dll.
@@ -93,7 +100,9 @@ function extractChapterHtml(rawHtml) {
     }
   });
 
-  return content.html() ? content.html().trim() : '';
+  const htmlContent = content.html() ? content.html().trim() : '';
+
+  return { htmlContent, updatedAt, publishedAt };
 }
 
 module.exports = { extractChapterHtml };

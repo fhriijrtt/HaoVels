@@ -1,39 +1,44 @@
 /**
  * Scraper khusus KAITO NOVEL (zerokaito.blogspot.com) — axios + cheerio.
  *
- * MODE: LAZY SCRAPING (on-demand, lewat HTTP server lokal).
- * Scraper ini TIDAK LAGI menjalankan satu batch besar yang mengambil semua
- * novel + semua chapter sekaligus. Sebagai gantinya, ia berjalan sebagai
- * server HTTP kecil yang hanya men-scrape sesuatu ketika benar-benar
- * dibutuhkan oleh app Flutter:
+ * MODE: EAGER + SCHEDULED CACHE.
+ * Berbeda dari versi awal (lazy/on-demand), scraper ini SEKARANG berjalan
+ * sendiri di background:
  *
- *   GET /api/novels          -> index ringan (id, title, cover, author) dari
- *                               halaman daftar on-going + tamat. Dipanggil
- *                               saat halaman Explore dibuka.
+ *   1. Saat proses start, langsung melakukan scrape penuh sekali (index +
+ *      detail tiap novel), supaya saat app Flutter pertama kali memanggil
+ *      /api/novels, data SUDAH SIAP di cache (tidak menunggu scrape).
+ *   2. Setelah itu, scheduler berjalan tiap SCRAPE_INTERVAL_MS (default 15
+ *      menit) untuk mengecek ulang seluruh list page. Untuk tiap novel,
+ *      `dateModified` halaman novel dibandingkan dengan cache lama:
+ *        - Jika SAMA  -> dilewati (tidak ada perubahan, hemat request).
+ *        - Jika BEDA/baru -> detail novel (termasuk daftar chapter & volume)
+ *          di-scrape ulang, sehingga chapter baru otomatis masuk ke cache.
+ *   3. Endpoint /api/novels & /api/novels/:id HANYA membaca cache yang
+ *      sudah ada (tidak memicu scrape baru) -> respons cepat ("satset").
+ *      Pengecualian: jika novel benar-benar belum pernah ada di cache sama
+ *      sekali (mis. baru ditambahkan sesaat sebelum index ter-refresh),
+ *      /api/novels/:id akan fallback scrape sekali untuk novel itu saja.
+ *
+ *   GET /api/novels          -> index ringan (id, title, cover, author,
+ *                               updatedAt), diurutkan TERBARU -> TERLAMA
+ *                               berdasarkan updatedAt. Dipanggil saat
+ *                               halaman Explore dibuka.
  *   GET /api/novels/:id      -> detail satu novel (synopsis, genres, author,
- *                               artist, daftar volume + cover volume + daftar
- *                               chapter per volume) — TANPA isi/htmlContent
- *                               chapter. Dipanggil saat user membuka detail
- *                               novel tersebut.
- *   GET /api/chapter?url=... -> isi HTML satu chapter (dibersihkan lewat
- *                               htmlCleaner). Dipanggil saat user membuka
- *                               chapter tersebut.
+ *                               artist, updatedAt, daftar volume + cover
+ *                               volume + daftar chapter per volume) — TANPA
+ *                               isi/htmlContent chapter.
+ *   GET /api/chapter?url=... -> isi HTML satu chapter + updatedAt/publishedAt
+ *                               chapter tsb (dibersihkan lewat htmlCleaner).
+ *                               Tetap LAZY: baru diambil saat chapter dibuka.
+ *   GET /api/health           -> status scraper (kapan terakhir scan, jumlah
+ *                               novel di cache, dll) — berguna untuk
+ *                               memantau proses di Railway.
  *
- * Hasil tiap endpoint disimpan ke cache sederhana (lihat bagian CACHE) agar
- * novel/chapter yang sudah pernah diambil tidak perlu di-request ulang ke
- * Blogspot setiap saat — cache dipegang di memori dan juga ditulis ke disk
- * (folder cache/) supaya tetap ada walau server di-restart.
- *
- * Karena Kaito Novel adalah blog Blogspot tanpa elemen semantik khusus
- * (tidak ada <div class="volume">, <div class="chapter-list">, dst),
- * parser di bawah membaca konten `.post-body.entry-content` secara LINEAR
- * (document order) dan mengklasifikasikan setiap elemen. Selector di bawah
- * adalah pendekatan umum untuk halaman blog seperti ini — sesuaikan jika
- * markup situs sumber sebenarnya sedikit berbeda.
- *
- * Urutan chapter & volume MENGIKUTI urutan kemunculan pada halaman sumber
- * (tidak di-sort ulang), karena Flutter (flatChapters) hanya mengandalkan
- * urutan array untuk navigasi previous/next.
+ * Urutan chapter DI DALAM satu volume mengikuti urutan kemunculan pada
+ * halaman sumber (tidak di-sort ulang), karena Flutter (flatChapters) hanya
+ * mengandalkan urutan array untuk navigasi previous/next. Yang DIURUTKAN
+ * ulang (terbaru -> terlama) hanya daftar NOVEL di /api/novels.
  */
 
 const fs = require('fs');
@@ -43,6 +48,7 @@ const { URL } = require('url');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { extractChapterHtml } = require('./htmlCleaner');
+const { extractDates } = require('./dateExtractor');
 
 // ---------------------------------------------------------------------------
 // KONFIGURASI
@@ -56,7 +62,17 @@ const LIST_PAGES = [
 ];
 
 const PORT = process.env.PORT || 3000;
-const REQUEST_DELAY_MS = 800; // sopan terhadap server Blogspot (dipakai antar 2 list page saja)
+
+// Interval scheduler: scrape ulang semua novel tiap 15 menit (lihat doc atas).
+const SCRAPE_INTERVAL_MS = Number(process.env.SCRAPE_INTERVAL_MS) || 15 * 60 * 1000;
+
+// Saat scheduler jalan, berapa banyak novel yang boleh di-scrape PARALEL
+// sekaligus. Tidak unlimited supaya tetap "agak" sopan ke server Blogspot
+// & tidak gampang kena rate-limit/blokir, tapi cukup cepat dibanding
+// berurutan satu-satu.
+const SCRAPE_CONCURRENCY = Number(process.env.SCRAPE_CONCURRENCY) || 5;
+
+const REQUEST_DELAY_MS = 300; // jeda kecil antar 2 list page (on-going vs tamat)
 const HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -110,17 +126,49 @@ function isPostUrl(href) {
   return true;
 }
 
+/**
+ * Menjalankan banyak task async dengan batas concurrency, supaya tidak
+ * menembak ratusan request ke Blogspot dalam satu waktu (Promise.all polos)
+ * tapi juga tidak berurutan satu-satu (lambat).
+ *
+ * @param {Array} items - daftar item yang akan diproses.
+ * @param {number} limit - maksimum task berjalan bersamaan.
+ * @param {(item: any, index: number) => Promise<any>} worker
+ */
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function runNext() {
+    while (cursor < items.length) {
+      const current = cursor;
+      cursor += 1;
+      try {
+        results[current] = await worker(items[current], current);
+      } catch (err) {
+        results[current] = { __error: err };
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, runNext);
+  await Promise.all(workers);
+  return results;
+}
+
 // ---------------------------------------------------------------------------
 // CACHE SEDERHANA (di memori + persist ke disk sebagai JSON)
 // ---------------------------------------------------------------------------
 //
 // 3 "tabel" cache:
-//   index.json    -> { entries: [{id,title,cover,author}], urlMap: {id: url} }
-//   novels.json   -> { [id]: detailNovelTanpaHtmlContent }
-//   chapters.json -> { [chapterUrl]: htmlContent }
+//   index.json    -> { entries: [{id,title,cover,author,updatedAt}] (sudah
+//                      diurutkan terbaru->terlama), urlMap: {id: url},
+//                      lastScrapedAt }
+//   novels.json   -> { [id]: detailNovelTanpaHtmlContent (termasuk updatedAt) }
+//   chapters.json -> { [chapterUrl]: { htmlContent, updatedAt, publishedAt } }
 //
 // Dibaca sekali saat server start, lalu di-update (dan ditulis ulang) setiap
-// kali ada data baru yang berhasil di-scrape.
+// kali ada data baru/berubah yang berhasil di-scrape.
 
 const CACHE_DIR = path.join(__dirname, 'cache');
 
@@ -145,12 +193,24 @@ function saveJsonCache(filename, data) {
   }
 }
 
-let indexCache = loadJsonCache('index.json', null); // null = belum pernah di-scrape
+// index.json sekarang juga punya `lastScrapedAt` di root, dan tiap entry
+// punya `updatedAt`. null = belum pernah ada cache sama sekali (proses baru
+// pertama kali start dan belum sempat scrape).
+let indexCache = loadJsonCache('index.json', null);
 const novelCache = loadJsonCache('novels.json', {});
 const chapterCache = loadJsonCache('chapters.json', {});
 
+// Status untuk /api/health
+const scraperStatus = {
+  isScraping: false,
+  lastScrapeStartedAt: null,
+  lastScrapeFinishedAt: null,
+  lastScrapeError: null,
+};
+
 // ---------------------------------------------------------------------------
-// 1. EXPLORE — index ringan (title, cover, author, id) dari halaman daftar
+// 1. EXPLORE — index ringan (title, cover, author, updatedAt, id) dari
+//    halaman daftar
 // ---------------------------------------------------------------------------
 
 /**
@@ -238,36 +298,18 @@ async function scrapeListPages() {
   return Array.from(merged.values());
 }
 
-/**
- * Index ringan untuk Explore — lazy: hanya di-scrape sekali (request pertama),
- * lalu dipakai dari cache untuk request-request berikutnya.
- * `indexPromise` mencegah scrape ganda jika ada 2 request datang bersamaan
- * sebelum scrape pertama selesai (masih bagian dari "tidak request ulang").
- */
-let indexPromise = null;
-async function getNovelIndex() {
-  if (indexCache) return indexCache;
-  if (!indexPromise) {
-    indexPromise = (async () => {
-      const rawEntries = await scrapeListPages();
-      const urlMap = {};
-      const entries = rawEntries.map(({ id, title, cover, author, url }) => {
-        urlMap[id] = url;
-        return { id, title, cover, author };
-      });
-      indexCache = { entries, urlMap };
-      saveJsonCache('index.json', indexCache);
-      return indexCache;
-    })().finally(() => {
-      indexPromise = null;
-    });
-  }
-  return indexPromise;
+/** Mengurutkan entry index terbaru -> terlama berdasarkan updatedAt (ISO string). */
+function sortEntriesByUpdatedAtDesc(entries) {
+  return [...entries].sort((a, b) => {
+    const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+    const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+    return bTime - aTime; // terbaru dulu
+  });
 }
 
 // ---------------------------------------------------------------------------
 // 2. DETAIL NOVEL — synopsis, genres, author, artist, volume, cover volume,
-//    dan daftar chapter per volume (TANPA isi/htmlContent chapter)
+//    updatedAt, dan daftar chapter per volume (TANPA isi/htmlContent chapter)
 // ---------------------------------------------------------------------------
 
 /**
@@ -277,10 +319,13 @@ async function getNovelIndex() {
  * sini, baru diambil saat chapter itu sendiri dibuka (lihat getChapterContent).
  */
 function parseNovelPage(html, novelUrl) {
+  const { updatedAt, publishedAt } = extractDates(html);
+
   const $ = cheerio.load(html);
   const content = $(CONTENT_SELECTOR).first();
 
   const title =
+    $('h1.entry-title').first().text().trim() ||
     $('h3.post-title.entry-title').first().text().trim() ||
     $('meta[property="og:title"]').attr('content') ||
     '';
@@ -298,8 +343,8 @@ function parseNovelPage(html, novelUrl) {
   let synopsisStarted = false;
 
   const LABEL_PATTERNS = {
-    author: /^(author|penulis)\s*:\s*/i,
-    artist: /^(artist|illustrator)\s*:\s*/i,
+    author: /^(author\(s\)|author|penulis)\s*:\s*/i,
+    artist: /^(artist\(s\)|artist|illustrator)\s*:\s*/i,
     genre: /^(genre|genres)\s*:\s*/i,
     synopsis: /^(synopsis|sinopsis)\s*:\s*/i,
   };
@@ -311,7 +356,7 @@ function parseNovelPage(html, novelUrl) {
 
     // --- Deteksi marker "Volume xx" -------------------------------------
     if (['p', 'div', 'span', 'b', 'strong', 'h3', 'h4', 'li'].includes(tag)) {
-      const txt = directText($, el);
+      const txt = directText($, el) || $el.text().trim();
       if (/^volume\s*\d+/i.test(txt)) {
         const match = txt.match(/volume\s*0*(\d+)/i);
         const number = match ? parseInt(match[1], 10) : volumes.length + 1;
@@ -401,31 +446,37 @@ function parseNovelPage(html, novelUrl) {
     genres,
     synopsis: synopsisParts.join('\n\n').trim(),
     volumes,
+    updatedAt,
+    publishedAt,
   };
 }
 
 /**
- * Detail satu novel — lazy: baru di-scrape saat pertama kali diminta untuk
- * [id] tersebut, lalu dipakai dari cache untuk request-request berikutnya.
- * `novelDetailPromises` mencegah scrape ganda untuk [id] yang sama jika ada
- * 2 request datang bersamaan sebelum scrape pertama selesai.
+ * Scrape detail satu novel langsung dari sumber (tanpa cek cache).
+ * Dipakai oleh scheduler maupun fallback lazy.
+ */
+async function scrapeNovelDetail(novelUrl) {
+  console.log(`[novel] Scraping detail: ${novelUrl}`);
+  const html = await fetchHtml(novelUrl);
+  return parseNovelPage(html, novelUrl);
+}
+
+/**
+ * Fallback lazy: dipanggil dari endpoint /api/novels/:id ketika novel
+ * BENAR-BENAR belum ada di cache sama sekali (mis. baru muncul di list page
+ * tapi scheduler belum sempat memprosesnya). Hasilnya langsung disimpan ke
+ * cache supaya request berikutnya tidak perlu scrape ulang.
  */
 const novelDetailPromises = new Map();
-async function getNovelDetail(id) {
+async function getNovelDetailWithFallback(id) {
   if (novelCache[id]) return novelCache[id];
   if (novelDetailPromises.has(id)) return novelDetailPromises.get(id);
 
   const promise = (async () => {
-    // Pastikan index (& url novel) sudah ada — jika belum, bangun dulu (self-heal),
-    // supaya /api/novels/:id tetap bisa dipanggil duluan tanpa /api/novels.
-    const { urlMap } = await getNovelIndex();
-    const novelUrl = urlMap[id];
-    if (!novelUrl) return null;
+    if (!indexCache || !indexCache.urlMap[id]) return null;
+    const novelUrl = indexCache.urlMap[id];
 
-    console.log(`[novel] Scraping detail: ${novelUrl}`);
-    const html = await fetchHtml(novelUrl);
-    const detail = parseNovelPage(html, novelUrl);
-
+    const detail = await scrapeNovelDetail(novelUrl);
     novelCache[id] = detail;
     saveJsonCache('novels.json', novelCache);
     return detail;
@@ -438,15 +489,11 @@ async function getNovelDetail(id) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. ISI CHAPTER — baru diambil & dibersihkan (htmlCleaner) saat chapter dibuka
+// 3. ISI CHAPTER — tetap LAZY, baru diambil & dibersihkan (htmlCleaner) saat
+//    chapter benar-benar dibuka oleh user. Sekalian mengembalikan tanggal
+//    update/publish chapter itu untuk ditampilkan di UI.
 // ---------------------------------------------------------------------------
 
-/**
- * Isi HTML satu chapter — lazy: baru di-fetch + dibersihkan saat pertama kali
- * diminta untuk [chapterUrl] tersebut, lalu dipakai dari cache setelahnya.
- * `chapterPromises` mencegah fetch ganda untuk [chapterUrl] yang sama jika
- * ada 2 request datang bersamaan sebelum fetch pertama selesai.
- */
 const chapterPromises = new Map();
 async function getChapterContent(chapterUrl) {
   if (Object.prototype.hasOwnProperty.call(chapterCache, chapterUrl)) {
@@ -457,11 +504,11 @@ async function getChapterContent(chapterUrl) {
   const promise = (async () => {
     console.log(`[chapter] Mengambil isi: ${chapterUrl}`);
     const html = await fetchHtml(chapterUrl);
-    const htmlContent = extractChapterHtml(html);
+    const result = extractChapterHtml(html); // { htmlContent, updatedAt, publishedAt }
 
-    chapterCache[chapterUrl] = htmlContent;
+    chapterCache[chapterUrl] = result;
     saveJsonCache('chapters.json', chapterCache);
-    return htmlContent;
+    return result;
   })().finally(() => {
     chapterPromises.delete(chapterUrl);
   });
@@ -471,7 +518,106 @@ async function getChapterContent(chapterUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// SERVER HTTP — endpoint lazy untuk dipanggil dari app Flutter
+// 4. SCHEDULER — scrape penuh berkala (index + detail novel yang berubah)
+// ---------------------------------------------------------------------------
+
+/**
+ * Satu siklus penuh scraping:
+ *   1. Ambil semua list page -> dapat daftar novel + URL-nya.
+ *   2. Untuk tiap novel, scrape detail (paralel, dibatasi concurrency).
+ *      - Kalau novel SUDAH ada di cache DAN updatedAt halaman novel SAMA
+ *        dengan cache lama -> data lama dipertahankan (hemat penulisan).
+ *      - Kalau BEDA (atau novel baru) -> cache ditimpa dengan detail baru,
+ *        sehingga chapter baru otomatis ikut masuk.
+ *   3. Bangun ulang index.json dari novelCache, urutkan terbaru->terlama,
+ *      lalu simpan ke disk.
+ *
+ * Dipanggil sekali saat start, lalu diulang tiap SCRAPE_INTERVAL_MS oleh
+ * setInterval di bagian bawah file ini.
+ */
+async function runFullScrapeCycle() {
+  if (scraperStatus.isScraping) {
+    console.log('[scheduler] Scrape sebelumnya masih berjalan, lewati siklus ini.');
+    return;
+  }
+
+  scraperStatus.isScraping = true;
+  scraperStatus.lastScrapeStartedAt = new Date().toISOString();
+  scraperStatus.lastScrapeError = null;
+
+  try {
+    console.log('[scheduler] Mulai siklus scraping penuh...');
+    const listEntries = await scrapeListPages(); // [{id, title, cover, author, url}]
+
+    let changedCount = 0;
+    let skippedCount = 0;
+
+    await runWithConcurrency(listEntries, SCRAPE_CONCURRENCY, async (entry) => {
+      const cached = novelCache[entry.id];
+
+      let detail;
+      try {
+        detail = await scrapeNovelDetail(entry.url);
+      } catch (err) {
+        console.error(`[scheduler] Gagal scrape "${entry.title || entry.id}": ${err.message}`);
+        // Kalau gagal & sebelumnya sudah ada cache, pertahankan cache lama
+        // supaya app tidak kehilangan data hanya karena 1x gagal fetch.
+        if (cached) skippedCount += 1;
+        return;
+      }
+
+      const isNew = !cached;
+      const isChanged = cached && cached.updatedAt !== detail.updatedAt;
+
+      if (isNew || isChanged) {
+        novelCache[entry.id] = detail;
+        changedCount += 1;
+        console.log(
+          `[scheduler] ${isNew ? 'Novel baru' : 'Update terdeteksi'}: ${detail.title || entry.id}`
+        );
+      } else {
+        skippedCount += 1;
+      }
+    });
+
+    saveJsonCache('novels.json', novelCache);
+
+    // Bangun ulang index ringan dari novelCache (sumber kebenaran utama),
+    // supaya cover/author/title/updatedAt selalu sinkron dengan detail.
+    const urlMap = {};
+    const entries = listEntries.map((listEntry) => {
+      urlMap[listEntry.id] = listEntry.url;
+      const detail = novelCache[listEntry.id];
+      return {
+        id: listEntry.id,
+        title: (detail && detail.title) || listEntry.title,
+        cover: (detail && detail.cover) || listEntry.cover,
+        author: (detail && detail.author) || listEntry.author,
+        updatedAt: (detail && detail.updatedAt) || null,
+      };
+    });
+
+    indexCache = {
+      entries: sortEntriesByUpdatedAtDesc(entries),
+      urlMap,
+      lastScrapedAt: new Date().toISOString(),
+    };
+    saveJsonCache('index.json', indexCache);
+
+    scraperStatus.lastScrapeFinishedAt = indexCache.lastScrapedAt;
+    console.log(
+      `[scheduler] Siklus selesai. ${changedCount} novel diperbarui, ${skippedCount} tidak berubah, total ${entries.length} novel.`
+    );
+  } catch (err) {
+    scraperStatus.lastScrapeError = err.message;
+    console.error(`[scheduler] Siklus scraping gagal: ${err.message}`);
+  } finally {
+    scraperStatus.isScraping = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SERVER HTTP — endpoint dipanggil dari app Flutter
 // ---------------------------------------------------------------------------
 
 function sendJson(res, status, data) {
@@ -498,29 +644,51 @@ const server = http.createServer(async (req, res) => {
   const pathname = requestUrl.pathname;
 
   try {
-    // GET /api/novels -> index ringan (Explore)
+    // GET /api/novels -> index ringan, langsung dari cache (sudah terurut
+    // terbaru->terlama). TIDAK memicu scrape baru -> respons cepat.
     if (pathname === '/api/novels' && req.method === 'GET') {
-      const { entries } = await getNovelIndex();
-      return sendJson(res, 200, entries);
+      if (!indexCache) {
+        // Proses baru saja start & scrape pertama belum selesai sama sekali.
+        return sendJson(res, 503, {
+          error: 'Data belum siap, scraper sedang melakukan scrape awal. Coba lagi sebentar lagi.',
+        });
+      }
+      return sendJson(res, 200, indexCache.entries);
     }
 
-    // GET /api/novels/:id -> detail novel (dibuka saat user masuk halaman detail)
+    // GET /api/novels/:id -> detail novel dari cache (di-refresh scheduler).
+    // Fallback lazy-scrape hanya jika novel belum pernah ada di cache sama sekali.
     const detailMatch = pathname.match(/^\/api\/novels\/([^/]+)$/);
     if (detailMatch && req.method === 'GET') {
       const id = decodeURIComponent(detailMatch[1]);
-      const detail = await getNovelDetail(id);
+      const detail = novelCache[id] || (await getNovelDetailWithFallback(id));
       if (!detail) return sendJson(res, 404, { error: 'Novel tidak ditemukan' });
       return sendJson(res, 200, detail);
     }
 
-    // GET /api/chapter?url=... -> isi chapter (dibuka saat user membuka chapter)
+    // GET /api/chapter?url=... -> isi chapter + updatedAt/publishedAt
+    // (tetap lazy, dibuka saat user membuka chapter).
     if (pathname === '/api/chapter' && req.method === 'GET') {
       const chapterUrl = requestUrl.searchParams.get('url');
       if (!chapterUrl) {
         return sendJson(res, 400, { error: 'Parameter "url" wajib diisi' });
       }
-      const htmlContent = await getChapterContent(chapterUrl);
-      return sendJson(res, 200, { htmlContent });
+      const result = await getChapterContent(chapterUrl); // { htmlContent, updatedAt, publishedAt }
+      return sendJson(res, 200, result);
+    }
+
+    // GET /api/health -> status scraper, berguna untuk memantau di Railway.
+    if (pathname === '/api/health' && req.method === 'GET') {
+      return sendJson(res, 200, {
+        ok: true,
+        novelCount: indexCache ? indexCache.entries.length : 0,
+        lastScrapedAt: indexCache ? indexCache.lastScrapedAt : null,
+        isScraping: scraperStatus.isScraping,
+        lastScrapeStartedAt: scraperStatus.lastScrapeStartedAt,
+        lastScrapeFinishedAt: scraperStatus.lastScrapeFinishedAt,
+        lastScrapeError: scraperStatus.lastScrapeError,
+        scrapeIntervalMs: SCRAPE_INTERVAL_MS,
+      });
     }
 
     return sendJson(res, 404, { error: 'Endpoint tidak ditemukan' });
@@ -531,10 +699,19 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[lazy-scraper] Server berjalan di http://localhost:${PORT}`);
+  console.log(`[scraper] Server berjalan di http://localhost:${PORT}`);
   console.log('Endpoint:');
-  console.log('  GET /api/novels            -> index ringan (id, title, cover, author)');
-  console.log('  GET /api/novels/:id        -> detail novel (synopsis, genres, author, artist, volumes+chapters tanpa htmlContent)');
-  console.log('  GET /api/chapter?url=...   -> htmlContent satu chapter (dibersihkan via htmlCleaner)');
+  console.log('  GET /api/novels            -> index ringan, terurut terbaru->terlama (dari cache)');
+  console.log('  GET /api/novels/:id        -> detail novel (dari cache, fallback lazy jika belum ada)');
+  console.log('  GET /api/chapter?url=...   -> htmlContent + updatedAt/publishedAt chapter (lazy)');
+  console.log('  GET /api/health            -> status scraper');
   console.log(`Cache disimpan di: ${CACHE_DIR}`);
+  console.log(`Interval scrape otomatis: ${Math.round(SCRAPE_INTERVAL_MS / 60000)} menit, concurrency: ${SCRAPE_CONCURRENCY}`);
+
+  // Scrape penuh pertama langsung saat start, supaya data sudah siap
+  // sebelum request pertama dari app datang.
+  runFullScrapeCycle();
+
+  // Lalu ulangi tiap SCRAPE_INTERVAL_MS untuk mendeteksi novel/chapter baru.
+  setInterval(runFullScrapeCycle, SCRAPE_INTERVAL_MS);
 });

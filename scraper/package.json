@@ -1,7 +1,7 @@
 {
   "name": "ln-scraper",
-  "version": "1.0.0",
-  "description": "Lazy scraper untuk light novel - server HTTP lokal yang dipanggil on-demand oleh app Flutter LNReader",
+  "version": "2.0.0",
+  "description": "Scraper light novel (eager + scheduled cache) - scrape berkala di background lalu disajikan lewat API HTTP untuk app Flutter LNReader",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
