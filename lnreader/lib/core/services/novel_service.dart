@@ -23,7 +23,7 @@ class NovelService {
   /// - Web/desktop (chrome, dst): biarkan default ini.
   /// - Android emulator: ganti jadi 'http://10.0.2.2:3000'.
   /// - Device fisik / server scraper di mesin lain: ganti ke IP/host yang sesuai.
-  static const String baseUrl = 'http://localhost:3000';
+  static const String baseUrl = 'https://haovels-production.up.railway.app';
 
   List<Novel>? _indexCache;
   final Map<String, Novel> _detailCache = {};
